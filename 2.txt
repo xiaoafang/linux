@@ -1,0 +1,108 @@
+首先说一下程序和进程的区别
+存储位置不同：程序存储在硬盘当中，进程则是从硬盘加载到内存之中
+资源分配不同 : 创建进程操作系统要为进程分配相应的资源，内存，页表，I/O设备，cpu，而程序例如一个c文件或c生成的可执行程序，都只是占用硬盘外设资源
+程序加载到内存并为其分配相应的资源才变成进程，既然是进程就有并发性，而程序没有，一个动态观念，一个静态观念
+
+描述进程有一个概念交进程描述符PCB，在linux操作系统下交task_struct
+1.1 进程标识符PID
+pid_t pid;
+pid_t tpid;
+我们用pid区分每一个进程，linux为每一个进程和轻量级进程（线程）都分配一个pid用于唯一标识，但是linux程序员希望由一个进程产生的轻量级进程具有相同的pid,这样我们可以向进程发送信号时，可以影响在该进程下的所有线程
+为了做到这一点，linux引入线程组的概念，在线程组内，用唯一的主线程的pid标识该线程组的每一个线程的pid，使线程组中的每一个线程对外表现为一个整体，并存入tgid之中，我们可以用getpid()来得到该线程组的pid，其实是task_struct中的tgid字段
+但是每个线程也应该有自己的标识，就是LWP,如果我们想要知道某个线程的pid，目前还不确定，可能是gettid()，没有验证成功
+1.2 进程状态
+volatile long state;
+int exit_state;
+#define TASK_RUNNING        0
+#define TASK_INTERRUPTIBLE    1
+#define TASK_UNINTERRUPTIBLE    2
+#define TASK_STOPPED        4
+#define TASK_TRACED        8
+TASK_RUNNING： 一旦某个进程的state的值等于TASK_RUNNING，表明进程要么在运行要么在就绪队列里
+TASK_INTERRUPTIBLE：俗称浅度睡眠，进程因为等待一些条件（硬中断，一些信号，资源）成立，而被挂起成为阻塞状态，一旦条件成立，就会成为就绪状态，也就是state的值变成TASK_RUNNING 
+TASK_UNINTERRUPTIBLE：俗称深度睡眠，我们从外部发一个信号或有一个外部中断都不能唤醒他们
+TASK_STOP ：进程的执行被停止，当进程接收到SIGSTOP、SIGTTIN、SIGTSTP或者SIGTTOU信号之后就会进入该状态，暂停的进程通常发送SIGCONT信号让进程继续运行
+
+
+其实还有两个附加的进程状态既可以被添加到state域中，又可以被添加到exit_state域中。只有当进程终止的时候，才会达到这两种状态。 
+
+#define EXIT_ZOMBIE        16
+#define EXIT_DEAD        32
+EXIT_ZOMBIE ：进程已经终止，但是它的父进程还没有调用wait或者waitpid函数来获得有关进程终止的有关信息，在调用这两个函数之前，内核不会丢弃包含死去进程的进程描述符的数据结构的，防止父进程某一个时候需要这一些信息。
+
+EXIT_DEAD ：进程被系统释放，因为父进程已经调用了以上所提到的函数。现在内核也就可以安全的删除该进程的一切相关无用的信息了。
+
+1.3 进程内核栈
+void *stack
+内核栈的意义操作系统不相信任何人，所以系统调用要到内核态进行，返回给用户态结果
+操作系统内核在创建进程的时候，会为进程创建相应的堆栈，每个进程有两个堆栈，一个用户态一个内核态，根据cpu堆栈指针寄存器内容来进行内核栈用户栈的切换
+当进程因为中断或者系统调用而要进入内核空间时，进程所使用的堆栈从用户态切换到内核态
+在切换之后，进入内核态，先把用户堆栈的地址保存在内核栈之中，改变堆栈寄存器的指针为内核栈的地址，当进程恢复到用户态时，把先前保存到用户堆栈地址给指针寄存器，实现转换
+进入内核态时如何知道内核栈的地址呢？因为每次用户态栈切回用户态时，内核栈的信息会全部清除，所以直接返回内核栈的栈顶地址给堆栈指针寄存器就行
+
+1.4 进程调度
+int prio, static_prio, normal_prio;
+unsigned int rt_priority;
+成员        功能
+static_prio 保存静态优先级，可以通过nice系统进行修改
+rt_priority 保存实时优先级
+normal_prio 保存静态优先级和调度策略
+prio        保存动态优先级
+1.5 上下文数据
+上下文数据包括以下3部分：
+（1）用户级上下文: 正文、数据、用户堆栈以及共享存储区；
+（2）寄存器上下文:
+通用寄存器、程序寄存器(IP)、处理器状态寄存器(EFLAGS)、栈指针(ESP)；
+（3）系统级上下文:
+进程控制块task_struct、内存管理信息(mm_struct、vm_area_struct、pgd、pte)、内核栈
+所谓的进程上下文，就是一个进程在执行的时候，CPU的所有寄存器中的值、进程的状态以及堆栈上的内容，当内核需要切换到另一个进程时，它需要保存当前进程的所有状态，即保存当前进程的进程上下文，以便再次执行该进程时，能够恢复切换时的状态，继续执行
+当发生进程调度时，进行进程切换就是上下文切换
+进程上下文保存在内核态中，也就是环境变量上方的内核空间
+1.6进程地址空间
+struct mm_struct *mm,*sctive_mm;
+mm    进程所拥有的用户空间的内存描述符
+active_mm
+指向进程运行时使用的内存描述符，对于普通的进程来说，mm和active_mm是一样的，但是内核线程是没有进程地址空间的，所以内核线程的mm是空的，所以需要初始化内核线程的active_mm
+对于内核线程切记是没有地址空间的。
+
+1.7信号处理
+
+struct signal_struct *signal;
+
+struct sighand_struct *sighand;
+
+sigset_t blocked, real_blocked;
+
+sigset_t saved_sigmask; /* restored if set_restore_sigmask()
+                           was used */
+
+struct sigpending pending;
+
+unsigned long sas_ss_sp;
+
+size_t sas_ss_size;
+
+signal    指向进程信号描述符
+sighand   指向进程信号处理程序描述符
+blocked   表示被阻塞信号的掩码
+pending   存放私有挂起信号的数据结构
+sas_ss_sp 信号处理程序备用堆栈的地址
+
+1.8文件系统信息
+//文件系统信息结构体 /*
+filesystem information */
+struct fs_struct *fs;
+
+//打开文件相关信息结构体 /*
+open file information */
+struct files_struct *files;
+
+进程可以用来打开和关闭文件，文件属于系统资源，task_struct有两个来描述文件资源，他们会描述两个VFS索引节点，两个节点分别是root和pwd，分别指向根目录和当前的工作目录。
+
+成员                          功能
+struct fs_struct *fs          进程可执行镜像所在的文件系统
+struct files_struct *files    进程当前打开的文件
+
+
+
+
