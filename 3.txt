@@ -1,0 +1,119 @@
+浅析Linux文件系统
+再说文件系统之前，先说一下存储文件的硬件设备——硬盘，硬盘是由一个一个的盘片组成，盘片就跟我们见到的光盘一样，一个盘片又由两个面组成，叫做盘面，每个盘面有一个编号从上到下从0开始，盘面上有一条条的磁道，磁道是一个一个的同心圆从外向内也是从0开始顺序编号，这些同心圆并不是连续的记录数据，而是划分成一段一段的圆弧，每个圆弧叫做一个扇区，扇区从1开始编号，一般扇区的大小为512kb，于是我们就想，是不是读取数据时是把一个盘面的所有数据读完再读下一个盘面？其实不是，所有盘面上的同一磁道构成一个圆柱，通常叫做柱面，数据的读写并不是按盘面读取的，而是按柱面进行，也就是说，一个盘面磁道写满数据后，就在同一柱面的的下一个盘面来写数据，一个柱面写满后，磁头才移到同心圆更里面的柱面。
+如果对整个磁盘管理会不太方便，所以我们把一个磁盘分成多个分区，每个分区可以包含一个文件系统
+
+
+1.分区的第一部分是启动区（Boot block），主要提供计算机开机服务。
+2.第二部分为超级块（Super block），存放文件系统的基本信息。它存储有文件系统的相关信息，包括文件系统的类型，inode的数目，数据块的数目。
+一个文件系统只有一个Superblock，存放的信息有：
+inode,block的总量
+未使用和已使用的inode,block数量
+inode,block的大小
+文件系统挂载时间，最近写入数据时间，最近检查磁盘时间
+validbit值，文件系统已挂载，则validbit为0，否则为1
+struct ext2_super_block {
+    __le32 s_inodes_count;/ * * / inode计数
+        __le32 s_blocks_count;* / / *块计数
+        __le32 s_r_blocks_count;/*预留的块数*/。
+        __le32 s_free_blocks_count;/* Free blocks count */。
+        __le32 s_free_inodes_count;/* Free inodes count */。
+        __le32 s_first_data_block;/*第一个数据块*/。
+        __le32 s_log_block_size;/ *块大小* /
+        __le32 s_log_frag_size;/ *片段大小* /
+        __le32 s_blocks_per_group;/*每组块*/。
+        __le32 s_frags_per_group;/*每个组的片段*/。
+        __le32 s_inodes_per_group;/* * * * * * *
+                                     __le32 s_mtime;/ * * /挂载时间
+                                     __le32 s_wtime;/ * * /写时间
+                                     __le16 s_mnt_count;* / / *山计数
+                                     __le16 s_max_mnt_count;/*最大数量*/。
+    __le16 s_magic;/ * * /魔法签名
+        __le16 s_state;/*文件系统状态*/。
+        __le16 s_errors;/*检测错误时的行为*/。
+        __le16 s_minor_rev_level;/*小修改级别*/。
+        __le32 s_lastcheck;/*最后检查* *时间。
+                             __le32 s_checkinterval;/ * max。之间的时间间隔检查* /
+                             __le32 s_creator_os;/ *操作系统* /
+                             __le32 s_rev_level;/ * * /修订级别
+                             __le16 s_def_resuid;/*预留块*/的默认uid。
+    __le16 s_def_resgid;/*预留块*/。
+        __le16 s_def_resgid;/*预留块*/。
+        __le32 s_first_ino;/*第一个非保留的inode */。
+        __le16 s_inode_size;/* inode结构尺寸*/。
+        __le16 s_block_group_nr;/*此超级块*/。
+        __le32 s_feature_compat;/*兼容的特性集*/。
+        __le32 s_feature_incompat;/*不兼容的特性集*/。
+        __le32 s_feature_ro_compat;/*兼容的特性集*/。
+        __u8 s_uuid[16];/* 128-bit uuid为volume */。
+        char s_volume_name[16];/ *卷名* /
+        char s_last_mounted[64];/*目录最后安装*/。
+        __le32 s_algorithm_usage_bitmap;为压缩* / 
+        __u8 s_prealloc_blocks;/* Nr的块，以尝试预分配*/。
+        __u8 s_prealloc_dir_blocks;/* Nr为dirs */的预先分配。
+        __u16 s_padding1;
+    __u8 s_journal_uuid[16];/* uuid杂志超级街区*/。
+        __u32 s_journal_inum;/* inode号文件*/。
+        __u32 s_journal_dev;/*日志文件*/。
+        __u32 s_last_orphan;/*删除*/ __u32 s_hash_seed[4];/* HTREE哈希种子*/。
+        __u8 s_def_hash_version;/*默认的哈希版本使用*/。
+        __u8 s_reserved_char_pad;
+    __u16 s_reserved_word_pad;
+    __le32 s_default_mount_opts;
+    __le32 s_first_meta_bg;/* First metablock block group */。
+        __u32 s_reserved[190];/*填充到块的末尾*/。
+
+};
+
+3.inode存储文件的相关属性，inode是通过12个直接指针，1个间接指针，1个双间接指针，1个三间接指针来指向block的。
+struct ext2_inode {
+    __le16 i_mode; /* 文件类型 */ 
+    __le16 i_uid; /* 属主的 Uid */
+    __le32 i_size; /* 文件大小 */
+    __le32 i_atime; /* 最后访问时间 */
+    __le32 i_ctime; /* 文件创建和属性最后修改时间*/
+    __le32 i_mtime; /* 文件内容最后修改时间 */
+    __le32 i_dtime; /* 删除时间*/
+    __le16 i_gid; /* Low 16 bits of 属主的组 Id */
+    __le16 i_links_count; /* Links count */
+    __le32 i_blocks; /* Blocks count */
+    __le32 i_flags; /* File flags */
+    __le32 i_block[EXT2_N_BLOCKS];/* Pointers to blocks至多可以有15个“指针” 指向真正存放文件数据的地方 */
+    __le32 i_generation; /* File version (for NFS) */
+    __le32 i_file_acl; /* File ACL */
+    __le32 i_dir_acl; /* Directory ACL */
+    __le32 i_faddr; /* Fragment address */
+
+}
+4.数据区，每个block只能放一个文件的数据，若文件大小超过block，则占用多个；
+若小于block，block剩余的空间也不能被其他文件使用。
+
+5.File system Description(文件系统描述):每个块组的开始结束号码
+
+6.block bitmap(block对照表)：标识block是否使用便于系统快速找到空间来处置文件
+
+7.inode bitmap(inode对照表):标识inode是否使用 与block bitmap相似。
+
+文件系统把磁盘分为两片：元数据存储区(metadata)（inode位图、块位图、inode条目等等）、数据存储区（数据存储区又分为多个逻辑存储单元叫做磁盘块（是逻辑概念））
+ 文件系统树型结构之间的关系
+ 1)目录
+ 新建一个目录时，ext2会分配一个inode和至少一块block给该目录。
+ inode记录目录权限和属性，以及分配的block号。
+ block记录目录下的文件名和文件名占用的inode号。
+
+ 2)文件
+ 新建一个文件时，ext2会分配一个inode和对应文件大小的N个block块给该文件。
+ inode和文件名会同时被记录在目录的block中，以便通过目录访问到该文件。
+ block存放文件内容。
+
+ 3)文件查找
+ 查找文件时，会先找到文件所在目录，目录的inode对应的block中，
+ 存放着文件的名称和inode，找到文件名对应的inode,
+ 然后找到文件inode对应的block，找到文件内容。
+
+ 3.ext3文件系统
+ ext3是ext2的升级，加入了日志文件系统。
+
+ 4.挂载文件系统
+ 文件系统要挂载到目录树，才能使用。
+ 文件系统与目录树结合的操作，称为挂载。
+ 挂载点是目录，该目录为进入该文件系统的入口。
